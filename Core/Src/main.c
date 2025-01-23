@@ -28,6 +28,8 @@
 #include <stdbool.h>
 #include <SON_I2C_MPU6050.h>
 #include <dht22.h>
+#include "usbd_cdc_if.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -40,7 +42,10 @@ typedef enum {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-float temp = 24.4, humid = 0;
+float temp;
+bool status = false;
+char usb_rx_buffer[64]; // Bộ đệm nhận USB
+float Ax;
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -109,10 +114,15 @@ void handleTask2() {
     	  //	  intPart = (int)floorf(Ax * 100);
     	  	  printf("Ax=%f\n", Ax);
 }
-
 void eventScheduler() {
     while (1) {
-        if (isQueueEmpty()) {
+    	if (!status) {
+    	            printf("Waiting for 'start' command...\n");
+    	            HAL_Delay(1000); // Chờ 1 giây trước khi kiểm tra lại
+    	            continue; // Quay lại đầu vòng lặp
+    	        }
+
+       if (isQueueEmpty()) {
             printf("No events, system sleeping...\n");
             // Giả lập chế độ "ngủ" bằng cách chờ 100ms
             HAL_Delay(1000);
@@ -137,18 +147,30 @@ void eventScheduler() {
                     break;
             }
         }
-       if(!isQueueFull()){
-        enqueue(TASK_1_EVENT);  // Thêm sự kiện TASK_1_EVENT vào hàng đợi
 
-
-    }
-       if(!isQueueFull()){
-              enqueue(TASK_2_EVENT);  // Thêm sự kiện TASK_1_EVENT vào hàng đợi
-
-
-          }
-       HAL_Delay(5000);
 }}
+void CDC_ReceiveCallback(uint8_t* Buf, uint32_t Len) {
+    // Copy dữ liệu nhận vào bộ đệm và thêm ký tự kết thúc chuỗi
+    memcpy(usb_rx_buffer, Buf, Len);
+    usb_rx_buffer[Len] = '\0'; // Đảm bảo chuỗi kết thúc
+     if (strcmp(usb_rx_buffer, "start") == 0) {
+            status = true; // Bắt đầu hệ thống
+
+        } else if (strcmp(usb_rx_buffer, "stop") == 0) {
+            status = false; // Dừng hệ thống
+
+        }
+    // Kiểm tra nội dung và thêm sự kiện hoặc thay đổi trạng thái hệ thống
+        else if (strcmp(usb_rx_buffer, "event1") == 0) {
+        if (status) enqueue(TASK_1_EVENT); // Chỉ thêm nếu hệ thống đang chạy
+    } else if (strcmp(usb_rx_buffer, "event2") == 0) {
+        if (status) enqueue(TASK_2_EVENT); // Chỉ thêm nếu hệ thống đang chạy
+    }
+}
+
+
+
+
 
 /* USER CODE END PV */
 

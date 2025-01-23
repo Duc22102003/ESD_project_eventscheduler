@@ -109,7 +109,7 @@ uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
 /* USER CODE BEGIN EXPORTED_VARIABLES */
-
+extern char usb_rx_buffer[64];
 /* USER CODE END EXPORTED_VARIABLES */
 
 /**
@@ -259,9 +259,12 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
-  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
-  USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-  return (USBD_OK);
+	// Gọi callback người dùng để xử lý dữ liệu nhận
+
+	    USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
+	    USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+	    CDC_ReceiveCallback(Buf, *Len);
+	    return (USBD_OK);
   /* USER CODE END 6 */
 }
 
