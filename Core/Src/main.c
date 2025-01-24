@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 #include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -34,141 +35,97 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-typedef enum {
-    TASK_1_EVENT,
-    TASK_2_EVENT
-} Event;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 float temp;
-bool status = false;
+bool status1 = false;
+bool status2 = false;
 char usb_rx_buffer[64]; // Bộ đệm nhận USB
-float Ax;
+#define NUM_TASKS 2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define MAX_EVENTS 100
-Event eventQueue[MAX_EVENTS];
-int front = -1, rear = -1;
+typedef struct {
+    uint32_t earliest_deadline;
+    uint32_t end_cycle;
+    uint32_t deadline;
+    uint32_t period;
+} TaskState;
 
-// Hàm kiểm tra hàng đợi rỗng
-bool isQueueEmpty() {
-    return front == -1;
-}
+TaskState tasks[NUM_TASKS] = {
+    {0, 0, 100, 300},  // Temp task
+    {0, 0, 50, 150},   // Acc task
+};
 
-// Hàm kiểm tra hàng đợi đầy
-bool isQueueFull() {
-    return (rear + 1) % MAX_EVENTS == front;
-}
 
-// Thêm sự kiện vào hàng đợi
-bool enqueue(Event event) {
-    if (isQueueFull()) {
-        printf("Event queue is full!\n");
-        return false;
-    }
-    if (isQueueEmpty()) {
-        front = rear = 0;
-    } else {
-        rear = (rear + 1) % MAX_EVENTS;
-    }
-    eventQueue[rear] = event;
-    return true;
-}
 
-// Lấy sự kiện ra khỏi hàng đợi
-Event dequeue() {
-    if (isQueueEmpty()) {
-        printf("Event queue is empty!\n");
-        return -1; // Giá trị lỗi
-    }
-    Event event = eventQueue[front];
-    if (front == rear) { // Nếu chỉ còn một phần tử
-        front = rear = -1;
-    } else {
-        front = (front + 1) % MAX_EVENTS;
-    }
-    return event;
-}
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
 
+/* Definitions for TempTask */
+osThreadId_t TempTaskHandle;
+const osThreadAttr_t TempTask_attributes = {
+  .name = "TempTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal1,
+};
+/* Definitions for AccTask */
+osThreadId_t AccTaskHandle;
+const osThreadAttr_t AccTask_attributes = {
+  .name = "AccTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityNormal1,
+};
 /* USER CODE BEGIN PV */
-void handleTask1() {
-    printf("Task 1: Reading temperature...\n");
 
-    DHT22_Get_Temp(&temp);
 
-   	  	  printf("t=%f\n", temp);
-}
-
-void handleTask2() {
-    printf("Task 2: Reading acceleration...\n");
-
-    MPU6050_Read_Accel();
-    	  //	  intPart = (int)floorf(Ax * 100);
-    	  	  printf("Ax=%f\n", Ax);
-}
-void eventScheduler() {
-    while (1) {
-    	if (!status) {
-    	            printf("Waiting for 'start' command...\n");
-    	            HAL_Delay(1000); // Chờ 1 giây trước khi kiểm tra lại
-    	            continue; // Quay lại đầu vòng lặp
-    	        }
-
-       if (isQueueEmpty()) {
-            printf("No events, system sleeping...\n");
-            // Giả lập chế độ "ngủ" bằng cách chờ 100ms
-            HAL_Delay(1000);
-        } else {
-            Event event = dequeue(); // Lấy sự kiện ra khỏi hàng đợi
-
-            // Xử lý sự kiện tương ứng
-            switch (event) {
-                case TASK_1_EVENT:
-                	printf("Add event 1 to queue\n");
-                    handleTask1();
-                    printf("Remove t1 from queue.\n");
-                    break;
-                case TASK_2_EVENT:
-                	printf("Add event 2 to queue\n");
-                    handleTask2();
-
-                    printf("Remove t2 from queue.\n");
-                    break;
-                default:
-                    printf("Unknown event!\n");
-                    break;
-            }
-        }
-
-}}
 void CDC_ReceiveCallback(uint8_t* Buf, uint32_t Len) {
     // Copy dữ liệu nhận vào bộ đệm và thêm ký tự kết thúc chuỗi
     memcpy(usb_rx_buffer, Buf, Len);
     usb_rx_buffer[Len] = '\0'; // Đảm bảo chuỗi kết thúc
      if (strcmp(usb_rx_buffer, "start") == 0) {
-            status = true; // Bắt đầu hệ thống
+            status1 = true; // Bắt đầu hệ thống
+            status2 = true;
 
         } else if (strcmp(usb_rx_buffer, "stop") == 0) {
-            status = false; // Dừng hệ thống
-
+            status1 = false; // Dừng hệ thống
+            status2 = false;
         }
-    // Kiểm tra nội dung và thêm sự kiện hoặc thay đổi trạng thái hệ thống
-        else if (strcmp(usb_rx_buffer, "event1") == 0) {
-        if (status) enqueue(TASK_1_EVENT); // Chỉ thêm nếu hệ thống đang chạy
-    } else if (strcmp(usb_rx_buffer, "event2") == 0) {
-        if (status) enqueue(TASK_2_EVENT); // Chỉ thêm nếu hệ thống đang chạy
+
+
+}
+
+uint32_t getCurrentTimeMs() {
+    return HAL_GetTick();
+}
+
+void updateTaskDeadlines(uint32_t current_time) {
+    for (int i = 0; i < NUM_TASKS; i++) {
+        if (current_time >= tasks[i].end_cycle) {
+            tasks[i].end_cycle += tasks[i].period;
+            tasks[i].earliest_deadline = tasks[i].end_cycle - tasks[i].deadline;
+        }
     }
 }
 
+int getNextTask() {
+    int next_task = -1;
+    uint32_t earliest_deadline = UINT32_MAX;
 
+    for (int i = 0; i < NUM_TASKS; i++) {
+        if (tasks[i].earliest_deadline < earliest_deadline) {
+            earliest_deadline = tasks[i].earliest_deadline;
+            next_task = i;
+        }
+    }
+    return next_task;
+}
 
 
 
@@ -178,8 +135,37 @@ void CDC_ReceiveCallback(uint8_t* Buf, uint32_t Len) {
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
-/* USER CODE BEGIN PFP */
+void GetTempTask(void *argument);
+void GetAccTask(void *argument);
 
+/* USER CODE BEGIN PFP */
+void runEDF() {
+    uint32_t current_time;
+    while (1) {
+        if (!status1) {
+            osDelay(100); // Tạm dừng nếu hệ thống không hoạt động
+            continue;
+        }
+
+        current_time = getCurrentTimeMs();
+        updateTaskDeadlines(current_time);
+        printf("Current Time: %lu ms\n", current_time); // In thời gian hiện tại
+        for (int i = 0; i < NUM_TASKS; i++) {
+                    printf("Task %d -> Deadline: %lu ms, End Cycle: %lu ms, Period: %lu ms\n",
+                        i, tasks[i].earliest_deadline, tasks[i].end_cycle, tasks[i].period);
+                }
+        int next_task = getNextTask();
+        if (next_task == 0) {
+        	 printf("Next Task: GetTempTask\n"); // In ra thông báo về task tiếp theo
+            GetTempTask(NULL);
+        } else if (next_task == 1) {
+        	 printf("Next Task: GetAccTask\n"); // In ra thông báo về task tiếp theo
+            GetAccTask(NULL);
+        }
+
+        osDelay(1000); // Tránh sử dụng quá nhiều CPU
+    }
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -217,33 +203,73 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USB_DEVICE_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  MX_USB_DEVICE_Init();
   dht22_init();
  MPU6050_Init();
 
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of TempTask */
+  TempTaskHandle = osThreadNew(GetTempTask, NULL, &TempTask_attributes);
+
+  /* creation of AccTask */
+  AccTaskHandle = osThreadNew(GetAccTask, NULL, &AccTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
- printf("Event-Triggered Scheduler Starting...\n");
 
+  runEDF(); // Chạy EDF scheduler
+
+      while (1) {}
 
 
        // Chạy bộ lập lịch để xử lý sự kiện đã thêm
-       eventScheduler();
 
 
 
 
-   return 0;
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
-  /* USER CODE END 3 */
 
+  /* USER CODE END 3 */
+}
 
 /**
   * @brief System Clock Configuration
@@ -358,6 +384,78 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_GetTempTask */
+/**
+  * @brief  Function implementing the TempTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_GetTempTask */
+void GetTempTask(void *argument)
+{
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+	  if (status1) {
+		  DHT22_Get_Temp(&temp);
+
+		  	  printf("t=%d\n", (int) temp);
+	  }
+
+    osDelay(1000);
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_GetAccTask */
+/**
+* @brief Function implementing the AccTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_GetAccTask */
+void GetAccTask(void *argument)
+{
+  /* USER CODE BEGIN GetAccTask */
+  /* Infinite loop */
+  for(;;)
+  {
+
+	  if (status2) {
+		  MPU6050_Read_Accel();
+		    //	  intPart = (int)floorf(Ax * 100);
+	  	  printf("ax=%c%d.%d\n", (Ax < 0) ? '-': '+',(int) Ax, abs( ((int)(Ax * 10000)) % 10000)  );
+	  }
+
+    osDelay(1000);
+  }
+  /* USER CODE END GetAccTask */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM1 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM1) {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
